@@ -5,6 +5,7 @@ target_sources(
   addr_mapper.h 
 
   impl/linear_mappers.cpp
+  impl/region_mapper.cpp
   impl/rit.cpp
   impl/rit.h
 )
