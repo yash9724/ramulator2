@@ -47,10 +47,12 @@ class RegionMapper final : public IAddrMapper, public Implementation {
     int m_row_level = -1;
     int m_tx_offset = -1;           // Bits inside one request, which select no DRAM level
     std::vector<int> m_addr_bits;   // Most address bits each level can use
+    bool m_debug_decode = false;    // Print every decoded address, for testing
 
   public:
     void init() override {
       m_page_bytes = param<Addr_t>("page_bytes").desc("Bytes covered by one layout.").required();
+      m_debug_decode = param<bool>("debug_decode").desc("Print every decoded address to stderr.").default_val(false);
     };
 
     void setup(IFrontEnd* frontend, IMemorySystem* memory_system) override {
@@ -105,9 +107,23 @@ class RegionMapper final : public IAddrMapper, public Implementation {
       // the layout's row bits to give each page its own rows.
       Addr_t page = req.addr >> m_page_bits;
       req.addr_vec[m_row_level] |= page << region.level_bits[m_row_level].size();
+      if (m_debug_decode) {
+            print_decode(req, region);
+        }
     };
 
   private:
+    // Prints one line such as: decode 0x20 npu_friendly channel=1 pseudochannel=0 ...
+    // Ramulator retries a request when the memory is busy, so one address can
+    // print more than once.
+    void print_decode(const Request& req, const Region& region) const {
+        std::string line = fmt::format("decode {:#x} {}", req.addr, region.name);
+        for (int level = 0; level < m_num_levels; level++) {
+            line += fmt::format(" {}={}", m_dram->m_levels(level), req.addr_vec[level]);
+        }
+        fmt::print(stderr, "{}\n", line);
+    };
+
     Region read_region(const YAML::Node& node) const {
       Region region;
       region.name = node["name"].as<std::string>();
