@@ -38,7 +38,8 @@ class HBM2 : public IDRAM, public Implementation {
       "ACT", 
       "PRE", "PREA",
       "RD",  "WR",  "RDA",  "WRA",
-      "REFab", "REFsb"
+      "REFab", "REFsb",
+      "MAC"
     };
 
     inline static const ImplLUT m_command_scopes = LUT (
@@ -47,6 +48,7 @@ class HBM2 : public IDRAM, public Implementation {
         {"PRE",   "bank"},    {"PREA",   "channel"},
         {"RD",    "column"},  {"WR",     "column"}, {"RDA",   "column"}, {"WRA",   "column"},
         {"REFab", "channel"}, {"REFsb",  "bank"},
+        {"MAC",   "column"},
       }
     );
 
@@ -62,16 +64,18 @@ class HBM2 : public IDRAM, public Implementation {
         {"WRA",   {false,  true,    true,    false}},
         {"REFab", {false,  false,   false,   true }},
         {"REFsb", {false,  false,   false,   true }},
+        {"MAC",   {false,  false,   true,    false}},
       }
     );
 
     inline static constexpr ImplDef m_requests = {
-      "read", "write", "all-bank-refresh", "per-bank-refresh"
+      "read", "write", "all-bank-refresh", "per-bank-refresh", "pim-mac"
     };
 
     inline static const ImplLUT m_request_translations = LUT (
       m_requests, m_commands, {
         {"read", "RD"}, {"write", "WR"}, {"all-bank-refresh", "REFab"}, {"per-bank-refresh", "REFsb"},
+        {"pim-mac", "MAC"},
       }
     );
 
@@ -363,6 +367,13 @@ class HBM2 : public IDRAM, public Implementation {
           {.level = "bank", .preceding = {"WR"},  .following = {"PRE"}, .latency = V("nCWL") + V("nBL") + V("nWR")},  
           {.level = "bank", .preceding = {"RDA"}, .following = {"ACT", "REFsb"}, .latency = V("nRTPL") + V("nRP")},  
           {.level = "bank", .preceding = {"WRA"}, .following = {"ACT", "REFsb"}, .latency = V("nCWL") + V("nBL") + V("nWR") + V("nRP")},  
+
+          /*** PIM-MAC ***/
+          /// Reads one column in every bank at once and keeps the data inside
+          /// the banks, so only bank timing applies and there is no nBL.
+          {.level = "bankgroup", .preceding = {"MAC"}, .following = {"MAC"}, .latency = V("nCCDL")},
+          {.level = "bank", .preceding = {"ACT"}, .following = {"MAC"}, .latency = V("nRCDRD")},
+          {.level = "bank", .preceding = {"MAC"}, .following = {"PRE"}, .latency = V("nRTPL")},
         }
       );
       #undef V
@@ -392,6 +403,33 @@ class HBM2 : public IDRAM, public Implementation {
       m_preqs[m_levels["bank"]][m_commands["REFsb"]] = Lambdas::Preq::Bank::RequireBankClosed<HBM2>;
       m_preqs[m_levels["bank"]][m_commands["RD"]] = Lambdas::Preq::Bank::RequireRowOpen<HBM2>;
       m_preqs[m_levels["bank"]][m_commands["WR"]] = Lambdas::Preq::Bank::RequireRowOpen<HBM2>;
+
+      // A PIM-MAC works on the same row in every bank of a pseudo-channel, so its
+      // bank group and bank are -1, which the node tree reads as "all of them".
+      // ACT and PRE sent with the same -1 fields also reach every bank.
+      m_preqs[m_levels["pseudochannel"]][m_commands["MAC"]] = [](Node* node, int cmd, const AddrVec_t& addr_vec, Clk_t clk) {
+        int row = addr_vec[m_levels["row"]];
+        bool all_open = true;
+        bool all_closed = true;
+        for (auto bankgroup : node->m_child_nodes) {
+          for (auto bank : bankgroup->m_child_nodes) {
+            if (bank->m_state == m_states["Closed"]) {
+              all_open = false;
+            } else {
+              all_closed = false;
+              if (bank->m_row_state.find(row) == bank->m_row_state.end()) {
+                all_open = false;
+              }
+            }
+          }
+        }
+
+        if (all_open) {
+          return cmd;
+        }
+        // Close every bank first if any of them has another row open.
+        return all_closed ? m_commands["ACT"] : m_commands["PRE"];
+      };
     };
 
     void set_rowhits() {

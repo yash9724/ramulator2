@@ -148,6 +148,9 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         is_success = m_read_buffer.enqueue(req);
       } else if (req.type_id == Request::Type::Write) {
         is_success = m_write_buffer.enqueue(req);
+      } else if (m_dram->m_requests.contains("pim-mac") && req.type_id == m_dram->m_requests("pim-mac")) {
+        // PIM-MAC returns no data, but it is served like a read.
+        is_success = m_read_buffer.enqueue(req);
       } else {
         throw std::runtime_error("Invalid request type!");
       }
@@ -380,23 +383,35 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         if (m_dram->m_command_meta(req_it->command).is_closing) {
           auto& rowgroup = req_it->addr_vec;
           for (auto _it = m_active_buffer.begin(); _it != m_active_buffer.end(); _it++) {
-            auto& _it_rowgroup = _it->addr_vec;
-            bool is_matching = true;
-            for (int i = 0; i < m_bank_addr_idx + 1 ; i++) {
-              if (_it_rowgroup[i] != rowgroup[i] && _it_rowgroup[i] != -1 && rowgroup[i] != -1) {
-                is_matching = false;
-                break;
-              }
-            }
-            if (is_matching) {
+            if (is_same_bank(_it->addr_vec, rowgroup)) {
               request_found = false;
               break;
+            }
+          }
+
+          // Also keep the row open while a queued request can still read it.
+          // Otherwise a PRE that is ready one cycle before the next row hit
+          // closes the row, and the bank switches rows back and forth.
+          for (auto _it = m_read_buffer.begin(); request_found && _it != m_read_buffer.end(); _it++) {
+            bool is_row_hit = m_dram->get_preq_command(_it->final_command, _it->addr_vec) == _it->final_command;
+            if (is_row_hit && is_same_bank(_it->addr_vec, rowgroup)) {
+              request_found = false;
             }
           }
         }
       }
 
       return request_found;
+    }
+
+    // True if two address vectors name the same bank. -1 matches any value.
+    bool is_same_bank(const AddrVec_t& a, const AddrVec_t& b) const {
+      for (int i = 0; i < m_bank_addr_idx + 1; i++) {
+        if (a[i] != b[i] && a[i] != -1 && b[i] != -1) {
+          return false;
+        }
+      }
+      return true;
     }
 
     void finalize() override {

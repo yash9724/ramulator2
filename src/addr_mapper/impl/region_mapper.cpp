@@ -46,6 +46,7 @@ class RegionMapper final : public IAddrMapper, public Implementation {
     int m_num_levels = -1;
     int m_row_level = -1;
     int m_tx_offset = -1;           // Bits inside one request, which select no DRAM level
+    int m_pim_mac_type = -1;        // Request id of PIM-MAC, -1 if the DRAM has none
     std::vector<int> m_addr_bits;   // Most address bits each level can use
     bool m_debug_decode = false;    // Print every decoded address, for testing
 
@@ -77,6 +78,9 @@ class RegionMapper final : public IAddrMapper, public Implementation {
       int tx_bytes = m_dram->m_internal_prefetch_size * m_dram->m_channel_width / 8;
       m_tx_offset = calc_log2(tx_bytes);
       m_row_level = m_dram->m_levels("row");
+      if (m_dram->m_requests.contains("pim-mac")) {
+        m_pim_mac_type = m_dram->m_requests("pim-mac");
+      }
 
       if (!m_config["regions"] || m_config["regions"].size() == 0) {
         throw ConfigurationError("RegionMapper: no regions given.");
@@ -107,6 +111,12 @@ class RegionMapper final : public IAddrMapper, public Implementation {
       // the layout's row bits to give each page its own rows.
       Addr_t page = req.addr >> m_page_bits;
       req.addr_vec[m_row_level] |= page << region.level_bits[m_row_level].size();
+
+      // A PIM-MAC uses every bank of the pseudo-channel, and -1 means all of them.
+      if (req.type_id == m_pim_mac_type) {
+        req.addr_vec[m_dram->m_levels("bankgroup")] = -1;
+        req.addr_vec[m_dram->m_levels("bank")] = -1;
+      }
       if (m_debug_decode) {
             print_decode(req, region);
         }
